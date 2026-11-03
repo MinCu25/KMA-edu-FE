@@ -25,7 +25,7 @@ export function courseView(dto: ModuleClassResponse): Course {
     id: dto.moduleClassCode,
     name: dto.subjectName,
     credits: dto.credits,
-    teacher: dto.lecturerName,
+    teacher: dto.lecturerName ?? "Chưa phân công",
     day: schedule?.dayOfWeek ?? 2,
     start: schedule?.lessonOrderStart ?? 0,
     end: schedule?.lessonOrderEnd ?? 0,

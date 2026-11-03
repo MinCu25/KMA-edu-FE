@@ -68,6 +68,7 @@ export function EditForm({
   close,
   submit = "Lưu thay đổi",
   children,
+  onValuesChange,
 }: {
   fields: Field[];
   validate?: (f: FormData, e: FieldErrors) => FieldErrors;
@@ -75,6 +76,7 @@ export function EditForm({
   close: () => void;
   submit?: string;
   children?: ReactNode;
+  onValuesChange?: (data: FormData) => void;
 }) {
   const form = useFormErrors((f) =>
     validate
@@ -86,7 +88,10 @@ export function EditForm({
     <form
       className="student-form"
       noValidate
-      onChange={form.onChange}
+      onChange={(event) => {
+        form.onChange(event);
+        onValuesChange?.(new FormData(event.currentTarget));
+      }}
       onSubmit={async (e) => {
         e.preventDefault();
         if (!form.check(e.currentTarget)) return;

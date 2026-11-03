@@ -1,22 +1,6 @@
 import type { Course } from "../types/course";
 import type { ClassScheduleResponse } from "../types/dto";
-export function schedulesOverlap(
-  a: ClassScheduleResponse,
-  b: ClassScheduleResponse,
-) {
-  return (
-    a.dayOfWeek != null &&
-    a.dayOfWeek === b.dayOfWeek &&
-    a.lessonOrderStart != null &&
-    a.lessonOrderEnd != null &&
-    b.lessonOrderStart != null &&
-    b.lessonOrderEnd != null &&
-    a.lessonOrderStart <= b.lessonOrderEnd &&
-    b.lessonOrderStart <= a.lessonOrderEnd &&
-    (!a.startDate || !b.endDate || a.startDate <= b.endDate) &&
-    (!b.startDate || !a.endDate || b.startDate <= a.endDate)
-  );
-}
+export { recurringOverlap as schedulesOverlap } from "./timetable";
 export function scheduleEntries(courses: Course[], weekStart?: string) {
   return courses.flatMap((course) =>
     course.dto.schedules.flatMap((schedule) => {
