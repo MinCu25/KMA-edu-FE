@@ -20,7 +20,6 @@ import type {
   CreateLecturerRequest,
   CreateSubjectRequest,
   UpdateSubjectRequest,
-  CreateModuleClassRequest,
   CreateClassScheduleRequest,
   SetPrerequisiteRequest,
   LockUserRequest,
@@ -426,7 +425,7 @@ export default function DtoManager({ entity }: { entity: Kind }) {
           request = p;
         }
       } else {
-        const p: CreateModuleClassRequest = {
+        const p = {
           subjectId: n("subjectId"),
           semesterId: n("semesterId"),
           lecturerId: n("lecturerId"),

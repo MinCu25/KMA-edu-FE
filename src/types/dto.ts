@@ -277,20 +277,47 @@ export interface CreateClassScheduleRequest {
   startDate?: string;
   endDate?: string;
 }
+// Scheduling requests rechecked against develop on 2026-11-03.
 export interface CreateModuleClassRequest {
-  subjectId: number;
-  semesterId: number;
-  lecturerId: number;
-  moduleClassCode: string;
   maxCapacity: number;
+}
+export interface SubjectClassesRequest {
+  subjectId: number;
+  confirmAdditionalClasses: boolean;
+  classes: CreateModuleClassRequest[];
+}
+export interface CreateModuleClassesRequest {
+  subjects: SubjectClassesRequest[];
+}
+export interface UpdateModuleClassRequest {
+  maxCapacity: number;
+  reason: string;
+}
+export interface CancelModuleClassRequest {
+  reason: string;
+}
+export interface ModuleClassSearchRequest {
+  keyword?: string;
+  semesterId?: number;
+  subjectId?: number;
+  lecturerId?: number;
+  status?: ModuleClassStatus;
+  page: number;
+  size: number;
 }
 export interface ModuleClassResponse {
   id: number;
+  // Optional for legacy browser fixtures; backend responses provide these fields.
+  semesterId?: number;
+  subjectId?: number;
+  lecturerId?: number | null;
+  classSequence?: number;
+  dataSource?: string;
   moduleClassCode: string;
   subjectCode: string;
   subjectName: string;
   credits: number;
-  lecturerName: string;
+  lecturerName: string | null;
   semesterCode: string;
   maxCapacity: number;
   currentSize: number;
@@ -347,5 +374,32 @@ export interface PageResponse<T> {
 export type ActivityStatus = "STUDING" | "DEACTIVATED" | "DELETED";
 export type AiIntent = "KNOWLEDGE" | "GRADUATION" | "OUT_OF_SCOPE";
 export type TrainingType = "CHINH_QUY" | "LIEN_THONG" | "VAN_BANG_2";
-export interface SubjectActionRequest { reason:string; confirmed:boolean }
-export interface SubjectSearchRequest { keyword?:string; subjectCode?:string; subjectName?:string; credits?:number; status?:SubjectStatus; withoutPrerequisites:boolean; page:number; size:number }
+export interface SubjectActionRequest {
+  reason: string;
+  confirmed: boolean;
+}
+export interface SubjectSearchRequest {
+  keyword?: string;
+  subjectCode?: string;
+  subjectName?: string;
+  credits?: number;
+  status?: SubjectStatus;
+  withoutPrerequisites: boolean;
+  page: number;
+  size: number;
+}
+
+export interface OpeningSubjectResponse {
+  subjectId: number;
+  subjectCode: string;
+  subjectName: string;
+  credits: number;
+  onTimeStudentCount: number;
+  retakeStudentCount: number;
+  missedStudentCount: number;
+  expectedStudentCount: number;
+  recommendedClassCount: number;
+  existingClassCount: number;
+  dataSource: string;
+  historyComplete: boolean;
+}

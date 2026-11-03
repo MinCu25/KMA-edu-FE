@@ -1,3 +1,4 @@
+import { recurringOverlap as overlap } from "./timetable";
 import type {
   SubjectResponse,
   ClassScheduleResponse,
@@ -26,15 +27,7 @@ export function prerequisiteCycle(
     (n) => subjects.find((s) => s.id === n)?.subjectCode ?? String(n),
   );
 }
-export function overlap(a: ClassScheduleResponse, b: ClassScheduleResponse) {
-  return (
-    a.dayOfWeek === b.dayOfWeek &&
-    a.lessonOrderStart! <= b.lessonOrderEnd! &&
-    b.lessonOrderStart! <= a.lessonOrderEnd! &&
-    (!a.startDate || !b.endDate || a.startDate <= b.endDate) &&
-    (!b.startDate || !a.endDate || b.startDate <= a.endDate)
-  );
-}
+export { recurringOverlap as overlap } from "./timetable";
 export function conflicts(
   classes: ModuleClassResponse[],
   current: ModuleClassResponse,

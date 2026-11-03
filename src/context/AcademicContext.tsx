@@ -75,6 +75,10 @@ function useModel() {
     "kma-academic-terms-v1",
     [m.semester],
   );
+  // Backend planning results are separate from local curricula; never infer retake demand from class size.
+  const [openingDemand, setOpeningDemand] = usePersistentState<
+    Record<number, import("../types/dto").OpeningSubjectResponse[]>
+  >("kma-opening-demand-v1", {});
   const [curricula, setCurricula] = usePersistentState<
     import("../types/dto").CurriculumResponse[]
   >("kma-curricula-v1", []);
@@ -100,6 +104,22 @@ function useModel() {
   );
   const identities: ClassIdentity = { ...classMeta };
   for (const c of storedData.classes) {
+    if (c.lecturerId === null) {
+      delete identities[c.id];
+      continue;
+    }
+    if (c.lecturerId !== undefined) {
+      identities[c.id] = {
+        ...identities[c.id],
+        lecturerId: c.lecturerId,
+        roomType:
+          identities[c.id]?.roomType ??
+          rooms.find((r) => r.roomCode === c.schedules[0]?.roomCode)
+            ?.roomType ??
+          "LECTURE",
+      };
+      continue;
+    }
     if (identities[c.id]) continue;
     const matches = storedData.teachers.filter(
       (t) => t.fullName === c.lecturerName,
@@ -184,6 +204,8 @@ function useModel() {
     );
   };
   return {
+    openingDemand,
+    setOpeningDemand,
     curricula,
     setCurricula,
     enrollmentHistory,

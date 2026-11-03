@@ -1,3 +1,10 @@
+import { addDays, monday, termWeeks } from "../../utils/timetable";
+import {
+  buildOpeningRequest,
+  MAX_CLASS_CAPACITY,
+  publicationProblems,
+  scheduleProblems,
+} from "../../services/academic/classPlanning";
 import { useDemoData } from "../../context/DemoDataContext";
 import { demoRosters } from "../../data/mock/management";
 import { studentScheduleConflicts } from "../../services/academic/domain";
@@ -18,7 +25,7 @@ import type {
   ModuleClassResponse,
   ClassScheduleResponse,
   CreateClassScheduleRequest,
-  CreateModuleClassRequest,
+  UpdateModuleClassRequest,
 } from "../../types/dto";
 const labels: Record<string, string> = {
   UNSCHEDULED: "Chưa xếp lịch",
@@ -53,13 +60,27 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
           errors.list = "Vui lòng thêm ít nhất một lớp học phần.";
         draft.forEach((d, i) => {
           if (
+            !a.data.subjects.some(
+              (s) =>
+                s.id === d.subjectId &&
+                s.status === "ACTIVE" &&
+                !a.deletedSubjects.includes(s.id),
+            )
+          )
+            errors.list =
+              "Có học phần không còn được sử dụng. Vui lòng bỏ khỏi danh sách.";
+          if (
             !a.data.teachers.some(
               (t) => t.id === +d.lecturerId && t.status === "ACTIVE",
             )
           )
             errors[`teacher${i}`] = "Vui lòng chọn giảng viên đang hoạt động.";
-          if (!Number.isInteger(+d.maxCapacity) || +d.maxCapacity < 1)
-            errors[`capacity${i}`] = "Sức chứa phải là số nguyên dương.";
+          if (
+            !Number.isInteger(+d.maxCapacity) ||
+            +d.maxCapacity < 1 ||
+            +d.maxCapacity > MAX_CLASS_CAPACITY
+          )
+            errors[`capacity${i}`] = "Sức chứa phải là số nguyên từ 1 đến 80.";
         });
         if (term.isLocked || term.endDate! < today())
           errors.list = "Kỳ học đã khóa hoặc kết thúc.";
@@ -67,6 +88,7 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
           a.data.classes.some(
             (c) =>
               c.semesterCode === term.semesterCode &&
+              c.status !== "CANCELLED" &&
               draft.some(
                 (d) =>
                   a.data.subjects.find((s) => s.id === d.subjectId)
@@ -83,29 +105,32 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
         let nextId = Math.max(0, ...a.data.classes.map((c) => c.id));
         const created: ModuleClassResponse[] = [],
           meta = { ...a.classMeta };
-        const requests: CreateModuleClassRequest[] = [];
+        const request = buildOpeningRequest(
+          draft,
+          new FormData(e.currentTarget).get("confirmed") === "on",
+        );
+        // request is the batch HTTP body; lecturer/room choices are local assignment state, never serialized into it.
+        void request;
         draft.forEach((d) => {
           const s = a.data.subjects.find((s) => s.id === d.subjectId)!,
             t = a.data.teachers.find((t) => t.id === +d.lecturerId)!;
           let n = 1,
             code = "";
           do {
-            code = `${s.subjectCode}.${term.semesterCode}.L${String(n++).padStart(2, "0")}`;
+            code = `MC_${term.id}_${s.subjectCode}_${String(n++).padStart(3, "0")}`;
           } while (
             [...a.data.classes, ...created].some(
               (c) => c.moduleClassCode === code,
             )
           );
-          requests.push({
-            subjectId: s.id,
-            semesterId: term.id,
-            lecturerId: t.id,
-            moduleClassCode: code,
-            maxCapacity: +d.maxCapacity,
-          });
           const id = ++nextId;
           created.push({
             id,
+            semesterId: term.id,
+            subjectId: s.id,
+            lecturerId: t.id,
+            classSequence: n - 1,
+            dataSource: "LOCAL",
             moduleClassCode: code,
             subjectCode: s.subjectCode,
             subjectName: s.subjectName,
@@ -124,7 +149,7 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
         log(
           "Admin học vụ",
           "Mở lớp học phần",
-          requests.map((p) => p.moduleClassCode).join(", "),
+          created.map((p) => p.moduleClassCode).join(", "),
         );
         close();
         notify(
@@ -135,6 +160,64 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
       <p>
         <b>{term.semesterName}</b> · Chọn học phần rồi nhập thông tin từng lớp.
       </p>
+      <section className="opening-demand">
+        <h3>Nhu cầu mở học phần trong kỳ</h3>
+        {a.openingDemand[termId]?.length ? (
+          <div className="table-scroll">
+            <table className="management-table">
+              <thead>
+                <tr>
+                  <th>Học phần</th>
+                  <th>Đúng tiến độ</th>
+                  <th>Học lại</th>
+                  <th>Chưa học</th>
+                  <th>Tổng dự kiến</th>
+                  <th>Lớp đề xuất / đã mở</th>
+                  <th>Chọn</th>
+                </tr>
+              </thead>
+              <tbody>
+                {a.openingDemand[termId].map((d) => (
+                  <tr key={d.subjectId}>
+                    <td>
+                      {d.subjectCode} · {d.subjectName}
+                      {!d.historyComplete && (
+                        <small>Chưa đủ lịch sử học tập</small>
+                      )}
+                    </td>
+                    <td>{d.onTimeStudentCount}</td>
+                    <td>{d.retakeStudentCount}</td>
+                    <td>{d.missedStudentCount}</td>
+                    <td>{d.expectedStudentCount}</td>
+                    <td>
+                      {d.recommendedClassCount} / {d.existingClassCount}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          setSubject(String(d.subjectId));
+                          setCount(
+                            Math.max(1, Math.min(50, d.recommendedClassCount)),
+                          );
+                        }}
+                      >
+                        Chọn học phần
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="empty-state">
+            Chưa có dữ liệu nhu cầu mở học phần cho kỳ này. Hãy kiểm tra chương
+            trình đào tạo và dữ liệu học tập trước khi chọn học phần bên dưới.
+          </p>
+        )}
+      </section>
       <details className="curriculum-demand">
         <summary>Đối chiếu nhu cầu theo chương trình đào tạo</summary>
         {!a.curricula.length ? (
@@ -206,6 +289,7 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
                 </option>
               ))}
           </select>
+          <span className="field-error">{error.subject}</span>
         </label>
         <label>
           Số lớp cần mở
@@ -216,6 +300,7 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
             value={count}
             onChange={(e) => setCount(+e.target.value)}
           />
+          <span className="field-error">{error.count}</span>
         </label>
       </div>
       <button
@@ -223,7 +308,13 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
         className="btn"
         onClick={() => {
           if (!subject || !Number.isInteger(count) || count < 1 || count > 50) {
-            setError({ list: "Chọn học phần và số lớp nguyên từ 1 đến 50." });
+            setError({
+              subject: !subject ? "Vui lòng chọn học phần." : "",
+              count:
+                !Number.isInteger(count) || count < 1 || count > 50
+                  ? "Số lớp phải là số nguyên từ 1 đến 50."
+                  : "",
+            });
             return;
           }
           setDraft((old) => [
@@ -231,7 +322,7 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
             ...Array.from({ length: count }, () => ({
               subjectId: +subject,
               lecturerId: "",
-              maxCapacity: "",
+              maxCapacity: "80",
               roomType: "LECTURE",
             })),
           ]);
@@ -241,7 +332,8 @@ function Opening({ termId, close }: { termId: number; close: () => void }) {
         Thêm vào danh sách mở lớp
       </button>
       <p className="muted">
-        Nhu cầu sinh viên theo chương trình đào tạo: chưa có dữ liệu tổng hợp.
+        Sức chứa mỗi lớp từ 1 đến 80 sinh viên. Mở thêm lớp của cùng học phần
+        cần xác nhận bên dưới.
       </p>
       {draft.map((d, i) => (
         <fieldset className="opening-row" key={i}>
@@ -351,8 +443,10 @@ function ScheduleEditor({
   Object.assign(allRegistrations, registrations);
   const current = a.data.classes.find((c) => c.id === cls.id)!;
   const [editing, setEditing] = useState<ClassScheduleResponse | undefined>(),
-    [revision, setRevision] = useState(0);
+    [revision, setRevision] = useState(0),
+    [preview, setPreview] = useState<FormData | null>(null);
   const term = a.termFor(current)!;
+  const weeks = termWeeks(term);
   const fields: Field[] = [
     {
       key: "roomId",
@@ -400,18 +494,26 @@ function ScheduleEditor({
       value: editing?.lessonOrderEnd ?? "",
     },
     {
-      key: "startDate",
-      label: "Từ ngày (tuần bắt đầu)",
+      key: "startWeek",
+      label: "Tuần bắt đầu",
       required: true,
-      type: "date",
-      value: editing?.startDate ?? term.startDate ?? "",
+      type: "number",
+      min: 1,
+      max: weeks.length,
+      value: editing?.startDate
+        ? weeks.indexOf(monday(editing.startDate)) + 1
+        : 1,
     },
     {
-      key: "endDate",
-      label: "Đến ngày (tuần kết thúc)",
+      key: "endWeek",
+      label: "Tuần kết thúc",
       required: true,
-      type: "date",
-      value: editing?.endDate ?? term.endDate ?? "",
+      type: "number",
+      min: 1,
+      max: weeks.length,
+      value: editing?.endDate
+        ? weeks.indexOf(monday(editing.endDate)) + 1
+        : weeks.length,
     },
     { key: "reason", label: "Lý do xếp hoặc thay đổi lịch", required: true },
   ];
@@ -426,8 +528,12 @@ function ScheduleEditor({
       dayOfWeek: +str(f, "dayOfWeek"),
       lessonOrderStart: +str(f, "lessonOrderStart"),
       lessonOrderEnd: +str(f, "lessonOrderEnd"),
-      startDate: str(f, "startDate"),
-      endDate: str(f, "endDate"),
+      startDate: weeks[+str(f, "startWeek") - 1]
+        ? [weeks[+str(f, "startWeek") - 1], term.startDate!].sort()[1]
+        : "",
+      endDate: weeks[+str(f, "endWeek") - 1]
+        ? [addDays(weeks[+str(f, "endWeek") - 1], 6), term.endDate!].sort()[0]
+        : "",
     };
   }
   return (
@@ -437,7 +543,11 @@ function ScheduleEditor({
           {current.moduleClassCode} · {current.subjectName}
         </b>
         <br />
-        {current.lecturerName} · {current.maxCapacity} chỗ
+        {current.lecturerName || "Chưa phân công giảng viên"} ·{" "}
+        {current.maxCapacity} chỗ
+        <br />
+        Tuần 1 bắt đầu {weeks[0]}; kỳ học từ {term.startDate} đến {term.endDate}
+        .
       </p>
       <div className="schedule-list">
         {current.schedules.map((s) => (
@@ -453,6 +563,7 @@ function ScheduleEditor({
               className="btn"
               onClick={() => {
                 setEditing(s);
+                setPreview(null);
                 setRevision((v) => v + 1);
               }}
             >
@@ -461,9 +572,13 @@ function ScheduleEditor({
             <button
               className="btn"
               onClick={() => {
-                if (current.currentSize) {
+                if (!a.editable(current)) {
+                  notifyError("Kỳ học đã khóa/kết thúc hoặc lớp đã hủy.");
+                  return;
+                }
+                if (current.currentSize && current.schedules.length === 1) {
                   notifyError(
-                    "Không thể xóa buổi học khi lớp đã có sinh viên đăng ký.",
+                    "Không thể xóa buổi học cuối cùng khi lớp còn sinh viên đăng ký. Hãy cập nhật buổi học này.",
                   );
                   return;
                 }
@@ -477,15 +592,26 @@ function ScheduleEditor({
                           status:
                             c.schedules.length === 1
                               ? "UNSCHEDULED"
-                              : "SCHEDULED",
+                              : c.status === "OPEN"
+                                ? "OPEN"
+                                : "SCHEDULED",
                         }
                       : c,
                   ),
                 }));
+                a.setClassMeta((old) => ({
+                  ...old,
+                  [current.id]: {
+                    ...old[current.id],
+                    changedAt: new Date().toISOString(),
+                  },
+                }));
+                if (editing?.id === s.id) {
+                  setEditing(undefined);
+                  setRevision((v) => v + 1);
+                }
                 log("Admin học vụ", "Xóa buổi học", current.moduleClassCode);
-                notify(
-                  `Đã xóa buổi học của ${current.moduleClassCode}; cần công bố lại lớp.`,
-                );
+                notify(`Đã xóa buổi học của ${current.moduleClassCode}.`);
               }}
             >
               Xóa
@@ -494,21 +620,37 @@ function ScheduleEditor({
         ))}
       </div>
       <h3>{editing ? "Cập nhật buổi học" : "Thêm buổi học"}</h3>
+      {editing && (
+        <button
+          className="btn"
+          onClick={() => {
+            setEditing(undefined);
+            setRevision((v) => v + 1);
+          }}
+        >
+          Chuyển sang thêm buổi học
+        </button>
+      )}
       <EditForm
         key={revision}
         fields={fields}
+        onValuesChange={setPreview}
         close={close}
         submit={editing ? "Cập nhật lịch" : "Thêm lịch"}
         validate={(f, e) => {
-          if (+str(f, "lessonOrderEnd") < +str(f, "lessonOrderStart"))
-            e.lessonOrderEnd = ["Tiết kết thúc phải từ tiết bắt đầu trở đi."];
-          if (str(f, "endDate") < str(f, "startDate"))
-            e.endDate = ["Ngày kết thúc phải từ ngày bắt đầu trở đi."];
-          if (
-            str(f, "startDate") < term.startDate! ||
-            str(f, "endDate") > term.endDate!
-          )
-            e.startDate = ["Lịch phải nằm trong khoảng ngày của kỳ học."];
+          if (!a.editable(current))
+            e._form = ["Kỳ học đã khóa/kết thúc hoặc lớp đã hủy."];
+          const problems = scheduleProblems(schedule(f), term);
+          for (const [key, messages] of Object.entries(problems))
+            e[
+              key === "startDate"
+                ? "startWeek"
+                : key === "endDate"
+                  ? "endWeek"
+                  : key
+            ] = messages;
+          if (+str(f, "endWeek") < +str(f, "startWeek"))
+            e.endWeek = ["Tuần kết thúc phải từ tuần bắt đầu trở đi."];
           const clashes = conflicts(
             a.data.classes,
             current,
@@ -568,8 +710,8 @@ function ScheduleEditor({
             dayOfWeek: +str(f, "dayOfWeek"),
             lessonOrderStart: +str(f, "lessonOrderStart"),
             lessonOrderEnd: +str(f, "lessonOrderEnd"),
-            startDate: str(f, "startDate"),
-            endDate: str(f, "endDate"),
+            startDate: schedule(f).startDate!,
+            endDate: schedule(f).endDate!,
           };
           const next = schedule(f);
           a.setClassMeta((old) => ({
@@ -585,7 +727,7 @@ function ScheduleEditor({
               c.id === current.id
                 ? {
                     ...c,
-                    status: "SCHEDULED",
+                    status: c.status === "OPEN" ? "OPEN" : "SCHEDULED",
                     schedules: editing
                       ? c.schedules.map((s) => (s.id === editing.id ? next : s))
                       : [...c.schedules, next],
@@ -599,12 +741,39 @@ function ScheduleEditor({
             `${current.moduleClassCode} · phòng ${p.roomId} · ${str(f, "reason")}`,
           );
           setEditing(undefined);
+          setPreview(null);
           setRevision((v) => v + 1);
           notify(
-            `Đã ${editing ? "cập nhật" : "thêm"} lịch cho ${current.moduleClassCode}. Lớp cần được công bố lại.`,
+            `Đã ${editing ? "cập nhật" : "thêm"} lịch cho ${current.moduleClassCode}.${current.status === "OPEN" ? " Thời khóa biểu được cập nhật; lớp vẫn mở đăng ký." : " Lớp đã xếp lịch, có thể kiểm tra công bố."}`,
           );
         }}
-      />
+      >
+        {preview &&
+          str(preview, "dayOfWeek") &&
+          str(preview, "lessonOrderStart") &&
+          str(preview, "lessonOrderEnd") && (
+            <p className="room-suggestions" role="status">
+              <b>Phòng trống phù hợp: </b>
+              {a.rooms
+                .filter(
+                  (r) =>
+                    !r.deleted &&
+                    r.status === "ACTIVE" &&
+                    r.capacity >= current.maxCapacity &&
+                    r.roomType === a.classMeta[current.id]?.roomType &&
+                    !conflicts(
+                      a.data.classes,
+                      current,
+                      { ...schedule(preview), roomCode: r.roomCode },
+                      a.classMeta,
+                    ).length,
+                )
+                .map((r) => r.roomCode)
+                .join(", ") ||
+                "Không có phòng phù hợp trong khung giờ này. Hãy đổi thứ, tiết hoặc tuần học."}
+            </p>
+          )}
+      </EditForm>
       <p className="muted">
         Danh sách phòng chỉ gồm phòng đang sử dụng, đủ sức chứa và đúng loại.
         Khi lưu sẽ kiểm tra thêm trùng phòng và lịch giảng viên.
@@ -619,6 +788,7 @@ export default function ClassesPage() {
   const [termId, setTermId] = useState(m.semester.id),
     [q, setQ] = useState(""),
     [teacher, setTeacher] = useState(""),
+    [subjectFilter, setSubjectFilter] = useState(""),
     [status, setStatus] = useState(""),
     [opening, setOpening] = useState(false),
     [selected, setSelected] = useState<number[]>([]),
@@ -627,10 +797,12 @@ export default function ClassesPage() {
   const rows = a.data.classes.filter(
     (c) =>
       c.semesterCode === term?.semesterCode &&
-      (c.moduleClassCode + " " + c.subjectName)
+      (c.moduleClassCode + " " + c.subjectCode + " " + c.subjectName)
         .toLowerCase()
         .includes(q.toLowerCase()) &&
-      (!teacher || c.lecturerName === teacher) &&
+      (!teacher ||
+        String(c.lecturerId ?? a.classMeta[c.id]?.lecturerId) === teacher) &&
+      (!subjectFilter || c.subjectCode === subjectFilter) &&
       (!status || c.status === status),
   );
   const close = () => setDialog(null);
@@ -645,6 +817,7 @@ export default function ClassesPage() {
               label: "Giảng viên",
               required: true,
               value:
+                c.lecturerId ??
                 a.classMeta[c.id]?.lecturerId ??
                 a.data.teachers.find((t) => t.fullName === c.lecturerName)?.id,
               options: a.data.teachers
@@ -658,6 +831,7 @@ export default function ClassesPage() {
               key: "maxCapacity",
               label: "Sức chứa",
               required: true,
+              max: MAX_CLASS_CAPACITY,
               type: "number",
               min: Math.max(1, c.currentSize),
               value: c.maxCapacity,
@@ -666,6 +840,8 @@ export default function ClassesPage() {
           ]}
           close={close}
           validate={(f, e) => {
+            if (!a.editable(c))
+              e._form = ["Kỳ học đã khóa/kết thúc hoặc lớp đã hủy."];
             const next = {
               ...c,
               lecturerName:
@@ -699,6 +875,10 @@ export default function ClassesPage() {
             return e;
           }}
           save={(f) => {
+            const request: UpdateModuleClassRequest = {
+              maxCapacity: +str(f, "maxCapacity"),
+              reason: str(f, "reason"),
+            };
             const lecturer = a.data.teachers.find(
               (t) => t.id === +str(f, "lecturerId"),
             )!;
@@ -709,7 +889,8 @@ export default function ClassesPage() {
                   ? {
                       ...x,
                       lecturerName: lecturer.fullName,
-                      maxCapacity: +str(f, "maxCapacity"),
+                      lecturerId: lecturer.id,
+                      maxCapacity: request.maxCapacity,
                     }
                   : x,
               ),
@@ -717,6 +898,7 @@ export default function ClassesPage() {
             a.setClassMeta((old) => ({
               ...old,
               [c.id]: {
+                ...old[c.id],
                 roomType: old[c.id]?.roomType ?? "LECTURE",
                 lecturerId: lecturer.id,
               },
@@ -759,6 +941,11 @@ export default function ClassesPage() {
           fields={[{ key: "reason", label: "Lý do", required: true }]}
           close={close}
           submit="Xác nhận"
+          validate={(_, errors) => {
+            if (!a.editable(c))
+              errors._form = ["Kỳ học đã khóa/kết thúc hoặc lớp đã hủy."];
+            return errors;
+          }}
           save={(f) => {
             a.setData((old) => ({
               ...old,
@@ -780,44 +967,24 @@ export default function ClassesPage() {
       ),
     });
   }
+  const readiness = (c: ModuleClassResponse) =>
+    publicationProblems(
+      c,
+      a.termFor(c),
+      today(),
+      a.data.classes,
+      a.rooms,
+      a.classMeta,
+      a.data.teachers.filter((t) => t.status === "ACTIVE").map((t) => t.id),
+    );
   function publish() {
     const candidates = rows.filter((c) => selected.includes(c.id));
     const errors: string[] = [],
       valid: number[] = [];
     for (const c of candidates) {
-      let reason = "";
-      if (!a.editable(c)) reason = "kỳ đã khóa/kết thúc hoặc lớp đã hủy";
-      else if (c.status !== "SCHEDULED")
-        reason = "chỉ công bố lớp đã xếp lịch, chưa mở đăng ký";
-      else if (!c.schedules.length) reason = "chưa xếp lịch";
-      else if (
-        !a.data.teachers.some(
-          (t) =>
-            t.id === a.classMeta[c.id]?.lecturerId && t.status === "ACTIVE",
-        )
-      )
-        reason = "giảng viên không hoạt động";
-      else if (
-        c.schedules.some(
-          (s) => conflicts(a.data.classes, c, s, a.classMeta).length,
-        )
-      )
-        reason = "lịch bị xung đột";
-      else if (
-        c.schedules.some(
-          (s) =>
-            !a.rooms.some(
-              (r) =>
-                r.roomCode === s.roomCode &&
-                r.status === "ACTIVE" &&
-                !r.deleted &&
-                r.capacity >= c.maxCapacity &&
-                r.roomType === a.classMeta[c.id]?.roomType,
-            ),
-        )
-      )
-        reason = "phòng không hợp lệ hoặc không đủ chỗ";
-      if (reason) errors.push(`${c.moduleClassCode}: ${reason}`);
+      const reasons = readiness(c);
+      if (reasons.length)
+        errors.push(`${c.moduleClassCode}: ${reasons.join("; ")}`);
       else valid.push(c.id);
     }
     if (!candidates.length) {
@@ -880,6 +1047,7 @@ export default function ClassesPage() {
               value={termId}
               onChange={(e) => {
                 setTermId(+e.target.value);
+                setOpening(false);
                 setSelected([]);
                 setPage(0);
               }}
@@ -912,7 +1080,26 @@ export default function ClassesPage() {
             >
               <option value="">Tất cả</option>
               {a.data.teachers.map((t) => (
-                <option key={t.id}>{t.fullName}</option>
+                <option key={t.id} value={t.id}>
+                  {t.lecturerCode} · {t.fullName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Học phần
+            <select
+              value={subjectFilter}
+              onChange={(e) => {
+                setSubjectFilter(e.target.value);
+                setPage(0);
+              }}
+            >
+              <option value="">Tất cả học phần</option>
+              {a.data.subjects.map((s) => (
+                <option key={s.id} value={s.subjectCode}>
+                  {s.subjectCode} · {s.subjectName}
+                </option>
               ))}
             </select>
           </label>
@@ -934,18 +1121,41 @@ export default function ClassesPage() {
             </select>
           </label>
         </div>
+        <div className="class-workflow" aria-label="Lọc theo bước xử lý">
+          {[
+            ["", "Tất cả"],
+            ["UNSCHEDULED", "1. Chưa xếp lịch"],
+            ["SCHEDULED", "2. Chờ công bố"],
+            ["OPEN", "3. Mở đăng ký"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              className={`btn ${status === value ? "active" : ""}`}
+              onClick={() => {
+                setStatus(value);
+                setPage(0);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {term && (term.isLocked || term.endDate! < today()) && (
+          <p className="timetable-summary">
+            Kỳ học đã khóa hoặc kết thúc. Bạn chỉ có thể tra cứu và xuất danh
+            sách.
+          </p>
+        )}
         <div className="academic-toolbar">
           <button
             className="btn"
             onClick={() =>
               setSelected(
-                rows
-                  .filter((c) => c.status === "SCHEDULED" && a.editable(c))
-                  .map((c) => c.id),
+                rows.filter((c) => readiness(c).length === 0).map((c) => c.id),
               )
             }
           >
-            Chọn các lớp đã xếp lịch
+            Chọn tất cả lớp đủ điều kiện
           </button>
           <button className="btn primary" onClick={publish}>
             Công bố ({rows.filter((c) => selected.includes(c.id)).length})
@@ -967,7 +1177,7 @@ export default function ClassesPage() {
                 ...rows.map((c) => [
                   c.moduleClassCode,
                   c.subjectName,
-                  c.lecturerName,
+                  c.lecturerName ?? "Chưa phân công",
                   c.semesterCode,
                   c.currentSize,
                   c.maxCapacity,
@@ -1002,25 +1212,18 @@ export default function ClassesPage() {
                     {t === "Chọn" ? (
                       <input
                         type="checkbox"
-                        aria-label="Chọn tất cả lớp đã xếp lịch trong bộ lọc"
+                        aria-label="Chọn tất cả lớp đủ điều kiện trong bộ lọc"
                         checked={
-                          rows.some(
-                            (c) => c.status === "SCHEDULED" && a.editable(c),
-                          ) &&
+                          rows.some((c) => readiness(c).length === 0) &&
                           rows
-                            .filter(
-                              (c) => c.status === "SCHEDULED" && a.editable(c),
-                            )
+                            .filter((c) => readiness(c).length === 0)
                             .every((c) => selected.includes(c.id))
                         }
                         onChange={(e) =>
                           setSelected(
                             e.target.checked
                               ? rows
-                                  .filter(
-                                    (c) =>
-                                      c.status === "SCHEDULED" && a.editable(c),
-                                  )
+                                  .filter((c) => readiness(c).length === 0)
                                   .map((c) => c.id)
                               : [],
                           )
@@ -1056,15 +1259,22 @@ export default function ClassesPage() {
                     <br />
                     {c.subjectName}
                   </td>
-                  <td>{c.lecturerName}</td>
+                  <td>{c.lecturerName || "Chưa phân công"}</td>
                   <td>
                     {c.currentSize}/{c.maxCapacity}
                   </td>
                   <td>
+                    {!c.schedules.length && (
+                      <span className="muted">Chưa xếp lịch</span>
+                    )}
                     {c.schedules.map((s) => (
                       <div key={s.id}>
-                        T{s.dayOfWeek} · {s.lessonOrderStart}–{s.lessonOrderEnd}{" "}
-                        · {s.roomCode}
+                        {s.dayOfWeek === 8 ? "Chủ nhật" : `Thứ ${s.dayOfWeek}`}{" "}
+                        · Tiết {s.lessonOrderStart}–{s.lessonOrderEnd} ·{" "}
+                        {s.roomCode}
+                        <small style={{ display: "block" }}>
+                          {s.startDate} → {s.endDate}
+                        </small>
                       </div>
                     ))}
                   </td>
@@ -1074,6 +1284,13 @@ export default function ClassesPage() {
                     >
                       {labels[c.status]}
                     </span>
+                    {c.status === "SCHEDULED" && (
+                      <div className="class-readiness">
+                        {readiness(c).length
+                          ? readiness(c).join("; ")
+                          : "Đủ điều kiện công bố"}
+                      </div>
+                    )}
                   </td>
                   <td>
                     {a.editable(c) ? (

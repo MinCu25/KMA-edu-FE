@@ -8,7 +8,10 @@ import {
   chatReply,
   loginDemo,
 } from "../src/services/mock/dtoService";
-import { studentResponses } from "../src/data/mock/dtoFixtures";
+import {
+  semesterResponse,
+  studentResponses,
+} from "../src/data/mock/dtoFixtures";
 import {
   studentImportForm,
   scoreImportForm,
@@ -589,4 +592,133 @@ assert.equal(
 );
 console.log(
   "PASS: canonical subject data, deleted student guard, linked account sync, historical grade guard, pagination, lecturer IDs, student schedule conflicts",
+);
+
+// UC-19/22/23/25: batch payload, real weekdays and publication gates.
+import {
+  buildOpeningRequest,
+  publicationProblems,
+  scheduleProblems,
+} from "../src/services/academic/classPlanning";
+import {
+  recurringOverlap,
+  weeklyClasses,
+  termWeeks,
+} from "../src/utils/timetable";
+const batch = buildOpeningRequest(
+  [
+    { subjectId: 1, maxCapacity: "40" },
+    { subjectId: 2, maxCapacity: 80 },
+    { subjectId: 1, maxCapacity: 20 },
+  ],
+  true,
+);
+assert.deepEqual(batch, {
+  subjects: [
+    {
+      subjectId: 1,
+      confirmAdditionalClasses: true,
+      classes: [{ maxCapacity: 40 }, { maxCapacity: 20 }],
+    },
+    {
+      subjectId: 2,
+      confirmAdditionalClasses: true,
+      classes: [{ maxCapacity: 80 }],
+    },
+  ],
+});
+assert.throws(() =>
+  buildOpeningRequest([{ subjectId: 1, maxCapacity: 81 }], false),
+);
+assert.throws(() =>
+  buildOpeningRequest([{ subjectId: 1, maxCapacity: 1.5 }], false),
+);
+const weekTerm = {
+  ...semesterResponse,
+  startDate: "2026-11-03",
+  endDate: "2026-11-15",
+  isLocked: false,
+};
+const weekSchedule = {
+  ...domainClasses[0].schedules[0],
+  dayOfWeek: 2,
+  lessonOrderStart: 1,
+  lessonOrderEnd: 3,
+  startDate: "2026-11-03",
+  endDate: "2026-11-15",
+};
+const weekClass = {
+  ...domainClasses[0],
+  semesterCode: weekTerm.semesterCode,
+  status: "SCHEDULED" as const,
+  maxCapacity: 40,
+  currentSize: 0,
+  schedules: [weekSchedule],
+};
+assert.deepEqual(termWeeks(weekTerm), ["2026-11-02", "2026-11-09"]);
+assert.equal(
+  weeklyClasses([weekClass], "2026-11-02", weekTerm).length,
+  0,
+  "Monday before semester start is excluded",
+);
+assert.equal(weeklyClasses([weekClass], "2026-11-09", weekTerm).length, 1);
+assert.equal(
+  weeklyClasses([{ ...weekClass, status: "CANCELLED" }], "2026-11-09", weekTerm)
+    .length,
+  0,
+);
+assert.equal(
+  weeklyClasses(
+    [{ ...weekClass, schedules: [{ ...weekSchedule, dayOfWeek: 8 }] }],
+    "2026-11-09",
+    weekTerm,
+  )[0].date,
+  "2026-11-15",
+);
+assert.equal(
+  recurringOverlap(
+    { ...weekSchedule, startDate: "2026-11-02", endDate: "2026-11-04" },
+    { ...weekSchedule, startDate: "2026-11-03", endDate: "2026-11-09" },
+  ),
+  false,
+  "Overlapping date ranges with no common Monday are not a clash",
+);
+assert.equal(
+  recurringOverlap(weekSchedule, {
+    ...weekSchedule,
+    lessonOrderStart: 3,
+    lessonOrderEnd: 5,
+  }),
+  true,
+);
+assert.ok(
+  scheduleProblems(
+    { ...weekSchedule, startDate: "2026-11-03", endDate: "2026-11-04" },
+    weekTerm,
+  ).dayOfWeek,
+);
+assert.ok(
+  publicationProblems(
+    { ...weekClass, maxCapacity: 81 },
+    weekTerm,
+    "2026-11-03",
+    [weekClass],
+    [],
+    {},
+    [],
+  ).some((x) => x.includes("1–80")),
+);
+assert.ok(
+  publicationProblems(
+    weekClass,
+    { ...weekTerm, isLocked: true },
+    "2026-11-03",
+    [weekClass],
+    [],
+    {},
+    [],
+  ).some((x) => x.includes("khóa")),
+);
+console.log(
+  "PASS: batch opening, weekly timetable, partial weeks, Sunday and publication guards",
 );
